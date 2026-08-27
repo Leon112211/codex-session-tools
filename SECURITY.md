@@ -1,94 +1,40 @@
-\# Security Policy
+# Security Policy
 
+## Reporting a security issue
 
-
-\## Reporting a Security Issue
-
-
-
-If you discover a security issue in this project, please do not include sensitive local Codex data in a public GitHub issue.
-
-
+If you discover a security issue in this project, do not include sensitive local Codex data in a public GitHub issue.
 
 Sensitive data may include:
 
+- `.codex-global-state.json`
+- `.codex-global-state.json.bak`
+- `state_*.sqlite`
+- `codex-dev.db`
+- session transcripts and logs
+- authentication data
+- local project paths
+- real session UUIDs
 
+Share only the minimum information needed to reproduce the problem. Redact UUIDs, user names, project paths, tokens, credentials, and transcript content from logs or screenshots before sharing them.
 
-\- `.codex-global-state.json`
+For a suspected vulnerability that should not be public, use GitHub's private vulnerability reporting feature if it is enabled for this repository. Otherwise, contact the repository owner privately through an available GitHub profile contact method.
 
-\- `.codex-global-state.json.bak`
+## Local data warning
 
-\- `state\_\*.sqlite`
+Codex Session Tools operates on local Codex state. Before using a destructive command:
 
-\- `codex-dev.db`
+- back up important local data;
+- fully close Codex and ChatGPT Desktop; and
+- verify the target UUID carefully.
 
-\- session transcripts
+The deletion command is designed to operate on one explicitly supplied UUID and to stop when expected data structures are ambiguous or cannot be verified safely.
 
-\- logs
+## Supported environment
 
-\- authentication data
-
-\- local project paths
-
-\- real session UUIDs
-
-
-
-When reporting an issue, please provide only the minimum information required to reproduce the problem.
-
-
-
-\## Local Data Warning
-
-
-
-Codex Session Tools operates on local Codex state.
-
-
-
-Before using destructive commands:
-
-
-
-\- back up important local data
-
-\- fully close Codex / ChatGPT Desktop
-
-\- verify the target UUID carefully
-
-
-
-The tool is designed to operate on one explicitly supplied UUID and to abort when expected structures are ambiguous or unsafe.
-
-
-
-\## Supported Environment
-
-
-
-This project is primarily intended for:
-
-
-
-\- Windows
-
-\- PowerShell 5.1 or later
-
-\- Python 3
-
-\- Codex CLI
-
-\- Codex Desktop
-
-
+This project is primarily intended for Windows with PowerShell 5.1 or later, Python 3, the Codex CLI, and Codex Desktop.
 
 Internal Codex storage formats may change between releases, so compatibility is not guaranteed across all versions.
 
+## Disclosure
 
-
-\## Disclosure
-
-
-
-This is an unofficial community project and is not affiliated with or endorsed by OpenAI.
-
+This is an unofficial community project. It is not affiliated with or endorsed by OpenAI.
