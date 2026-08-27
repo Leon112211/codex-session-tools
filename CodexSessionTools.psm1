@@ -1,0 +1,1105 @@
+function Find-CodexSession {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Query,
+
+        [switch]$ExactTitle
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    $CodexHome = if ($env:CODEX_HOME) {
+        [IO.Path]::GetFullPath($env:CODEX_HOME)
+    }
+    else {
+        Join-Path $HOME ".codex"
+    }
+
+    $Map = @{}
+
+    # =========================================================
+    # 1. Core: session_index.jsonl
+    # =========================================================
+
+    $IndexPath = Join-Path $CodexHome "session_index.jsonl"
+
+    if (Test-Path $IndexPath) {
+
+        foreach ($line in Get-Content $IndexPath -Encoding UTF8) {
+
+            try {
+                $obj = $line | ConvertFrom-Json
+            }
+            catch {
+                continue
+            }
+
+            if (-not $obj.id) {
+                continue
+            }
+
+            $id = [string]$obj.id
+
+            if (-not $Map.ContainsKey($id)) {
+                $Map[$id] = [ordered]@{
+                    UUID    = $id
+                    Title   = $null
+                    Core    = $false
+                    Desktop = $false
+                    Cwd     = $null
+                }
+            }
+
+            $Map[$id].Core = $true
+
+            if ($obj.thread_name) {
+                $Map[$id].Title = [string]$obj.thread_name
+            }
+        }
+    }
+
+    # =========================================================
+    # 2. Desktop: local_thread_catalog
+    # =========================================================
+
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        throw "Python is required to inspect the Codex Desktop catalog."
+    }
+
+    $CatalogDb = Join-Path $CodexHome "sqlite\codex-dev.db"
+
+    if (Test-Path $CatalogDb) {
+
+        $env:CODEX_FIND_DB = $CatalogDb
+
+        $DesktopJson = @'
+import json
+import os
+import sqlite3
+from pathlib import Path
+
+db = Path(os.environ["CODEX_FIND_DB"])
+
+uri = db.resolve().as_uri() + "?mode=ro"
+con = sqlite3.connect(uri, uri=True)
+cur = con.cursor()
+
+exists = cur.execute(
+    """
+    SELECT 1
+    FROM sqlite_master
+    WHERE type='table'
+      AND name='local_thread_catalog'
+    """
+).fetchone()
+
+result = []
+
+if exists:
+
+    columns = [
+        row[1]
+        for row in cur.execute(
+            'PRAGMA table_info("local_thread_catalog")'
+        )
+    ]
+
+    if "thread_id" in columns:
+
+        if "display_title" in columns:
+            title_col = "display_title"
+        elif "title" in columns:
+            title_col = "title"
+        else:
+            title_col = None
+
+        cwd_col = "cwd" if "cwd" in columns else None
+
+        select_cols = ["thread_id"]
+
+        if title_col:
+            select_cols.append(title_col)
+
+        if cwd_col:
+            select_cols.append(cwd_col)
+
+        sql = (
+            "SELECT "
+            + ", ".join(
+                '"' + c.replace('"', '""') + '"'
+                for c in select_cols
+            )
+            + " FROM local_thread_catalog"
+        )
+
+        for row in cur.execute(sql):
+
+            item = {
+                "uuid": row[0],
+                "title": None,
+                "cwd": None
+            }
+
+            pos = 1
+
+            if title_col:
+                item["title"] = row[pos]
+                pos += 1
+
+            if cwd_col:
+                item["cwd"] = row[pos]
+
+            result.append(item)
+
+con.close()
+
+print(json.dumps(result, ensure_ascii=True))
+'@ | python -
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to read Codex Desktop catalog."
+        }
+
+        if ($DesktopJson) {
+
+            $DesktopRows = $DesktopJson | ConvertFrom-Json
+
+            foreach ($row in @($DesktopRows)) {
+
+                if (-not $row.uuid) {
+                    continue
+                }
+
+                $id = [string]$row.uuid
+
+                if (-not $Map.ContainsKey($id)) {
+                    $Map[$id] = [ordered]@{
+                        UUID    = $id
+                        Title   = $null
+                        Core    = $false
+                        Desktop = $false
+                        Cwd     = $null
+                    }
+                }
+
+                $Map[$id].Desktop = $true
+
+                if ($row.title) {
+                    $Map[$id].Title = [string]$row.title
+                }
+
+                if ($row.cwd) {
+                    $Map[$id].Cwd = [string]$row.cwd
+                }
+            }
+        }
+    }
+
+    # =========================================================
+    # 3. Build unified results
+    # =========================================================
+
+    $Results = foreach ($entry in $Map.Values) {
+
+        $Status = if ($entry.Core -and $entry.Desktop) {
+            "Core+Desktop"
+        }
+        elseif ($entry.Core) {
+            "CoreOnly"
+        }
+        elseif ($entry.Desktop) {
+            "DesktopOnly (Ghost)"
+        }
+        else {
+            "Unknown"
+        }
+
+        [pscustomobject]@{
+            Status  = $Status
+            Title   = $entry.Title
+            UUID    = $entry.UUID
+            Core    = $entry.Core
+            Desktop = $entry.Desktop
+            Cwd     = $entry.Cwd
+        }
+    }
+
+    # =========================================================
+    # 4. Filter
+    # =========================================================
+
+    if ($Query) {
+
+        if (
+            $Query -match
+            '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+        ) {
+            $Results = $Results |
+                Where-Object {
+                    $_.UUID -eq $Query
+                }
+        }
+        elseif ($ExactTitle) {
+            $Results = $Results |
+                Where-Object {
+                    $_.Title -eq $Query
+                }
+        }
+        else {
+            $Results = $Results |
+                Where-Object {
+                    $_.Title -like "*$Query*"
+                }
+        }
+    }
+
+    $Results |
+        Sort-Object Title, UUID
+}
+
+
+function Remove-CodexSessionHard {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern(
+            '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+        )]
+        [string]$Uuid
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    $CodexHome = if ($env:CODEX_HOME) {
+        [IO.Path]::GetFullPath($env:CODEX_HOME)
+    }
+    else {
+        Join-Path $HOME ".codex"
+    }
+
+    Write-Host ""
+    Write-Host "Target UUID : $Uuid"
+    Write-Host "CODEX_HOME  : $CodexHome"
+    Write-Host ""
+
+    # =========================================================
+    # 1. Safety gate
+    # =========================================================
+
+    $running = Get-Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessName -like "*Codex*" -or
+            $_.ProcessName -like "*ChatGPT*"
+        }
+
+    if ($running) {
+
+        Write-Host "Running Codex/ChatGPT processes:" `
+            -ForegroundColor Yellow
+
+        $running |
+            Select-Object ProcessName, Id, Path |
+            Format-Table
+
+        throw "ABORTED: fully close Codex/ChatGPT Desktop first."
+    }
+
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        throw "ABORTED: Python was not found."
+    }
+
+    if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
+        throw "ABORTED: codex CLI was not found."
+    }
+
+    $env:CODEX_DELETE_UUID = $Uuid
+    $env:CODEX_DELETE_HOME = $CodexHome
+
+    # =========================================================
+    # 2. Determine whether Core session exists
+    # =========================================================
+
+    Write-Host "[1/6] Inspecting Core session state..."
+
+    $RolloutMatches = @(
+        Get-ChildItem `
+            (Join-Path $CodexHome "sessions"),
+            (Join-Path $CodexHome "archived_sessions") `
+            -Recurse `
+            -File `
+            -Filter "*$Uuid*" `
+            -ErrorAction SilentlyContinue
+    )
+
+    $IndexPath = Join-Path $CodexHome "session_index.jsonl"
+
+    $IndexMatch = $false
+
+    if (Test-Path $IndexPath) {
+        $IndexMatch = [bool](
+            Select-String `
+                -LiteralPath $IndexPath `
+                -Pattern $Uuid `
+                -Encoding UTF8 `
+                -Quiet
+        )
+    }
+
+    $CoreDbCheck = @'
+import os
+import sqlite3
+from pathlib import Path
+
+uuid = os.environ["CODEX_DELETE_UUID"]
+home = Path(os.environ["CODEX_DELETE_HOME"])
+
+found = []
+
+for db in home.glob("state_*.sqlite"):
+
+    uri = db.resolve().as_uri() + "?mode=ro"
+
+    con = sqlite3.connect(uri, uri=True)
+    cur = con.cursor()
+
+    tables = [
+        r[0]
+        for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    ]
+
+    for table in tables:
+
+        qt = '"' + table.replace('"', '""') + '"'
+
+        columns = [
+            r[1]
+            for r in cur.execute(
+                f"PRAGMA table_info({qt})"
+            )
+        ]
+
+        for col in columns:
+
+            qc = '"' + col.replace('"', '""') + '"'
+
+            try:
+                row = cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM {qt}
+                    WHERE instr(
+                        CAST({qc} AS TEXT),
+                        ?
+                    ) > 0
+                    LIMIT 1
+                    """,
+                    (uuid,)
+                ).fetchone()
+
+                if row:
+                    found.append(
+                        f"{db.name}:{table}.{col}"
+                    )
+
+            except sqlite3.Error:
+                pass
+
+    con.close()
+
+if found:
+    for item in found:
+        print("FOUND:" + item)
+else:
+    print("CLEAN")
+'@ | python -
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to inspect Core SQLite state."
+    }
+
+    $CoreDbDirty = @(
+        $CoreDbCheck |
+            Where-Object {
+                $_ -like "FOUND:*"
+            }
+    ).Count -gt 0
+
+    $CoreExists = (
+        $RolloutMatches.Count -gt 0 -or
+        $IndexMatch -or
+        $CoreDbDirty
+    )
+
+    if ($CoreExists) {
+        Write-Host "Core session exists."
+    }
+    else {
+        Write-Host "Core session already absent."
+    }
+
+    # =========================================================
+    # 3. Official deletion when Core exists
+    # =========================================================
+
+    Write-Host ""
+    Write-Host "[2/6] Core deletion..."
+
+    if ($CoreExists) {
+
+        & codex delete --force $Uuid
+
+        $DeleteExitCode = $LASTEXITCODE
+
+        if ($DeleteExitCode -eq 0) {
+            Write-Host "Official deletion returned success."
+        }
+        else {
+            Write-Warning (
+                "codex delete returned exit code " +
+                "$DeleteExitCode. Actual state will now be verified."
+            )
+        }
+    }
+    else {
+        Write-Host "Skipped: no Core session exists."
+    }
+
+    # =========================================================
+    # 4. Verify Core is clean
+    # =========================================================
+
+    Write-Host ""
+    Write-Host "[3/6] Verifying Core state..."
+
+    $RemainingRollouts = @(
+        Get-ChildItem `
+            (Join-Path $CodexHome "sessions"),
+            (Join-Path $CodexHome "archived_sessions") `
+            -Recurse `
+            -File `
+            -Filter "*$Uuid*" `
+            -ErrorAction SilentlyContinue
+    )
+
+    $RemainingIndex = $false
+
+    if (Test-Path $IndexPath) {
+        $RemainingIndex = [bool](
+            Select-String `
+                -LiteralPath $IndexPath `
+                -Pattern $Uuid `
+                -Encoding UTF8 `
+                -Quiet
+        )
+    }
+
+    $RemainingCoreDb = @'
+import os
+import sqlite3
+from pathlib import Path
+
+uuid = os.environ["CODEX_DELETE_UUID"]
+home = Path(os.environ["CODEX_DELETE_HOME"])
+
+found = []
+
+for db in home.glob("state_*.sqlite"):
+
+    uri = db.resolve().as_uri() + "?mode=ro"
+
+    con = sqlite3.connect(uri, uri=True)
+    cur = con.cursor()
+
+    tables = [
+        r[0]
+        for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    ]
+
+    for table in tables:
+
+        qt = '"' + table.replace('"', '""') + '"'
+
+        columns = [
+            r[1]
+            for r in cur.execute(
+                f"PRAGMA table_info({qt})"
+            )
+        ]
+
+        for col in columns:
+
+            qc = '"' + col.replace('"', '""') + '"'
+
+            try:
+                row = cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM {qt}
+                    WHERE instr(
+                        CAST({qc} AS TEXT),
+                        ?
+                    ) > 0
+                    LIMIT 1
+                    """,
+                    (uuid,)
+                ).fetchone()
+
+                if row:
+                    found.append(
+                        f"{db.name}:{table}.{col}"
+                    )
+
+            except sqlite3.Error:
+                pass
+
+    con.close()
+
+for item in found:
+    print(item)
+'@ | python -
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to verify Core SQLite state."
+    }
+
+    if (
+        $RemainingRollouts.Count -gt 0 -or
+        $RemainingIndex -or
+        @($RemainingCoreDb).Count -gt 0
+    ) {
+
+        Write-Host ""
+        Write-Host "Core state is NOT clean." `
+            -ForegroundColor Red
+
+        if ($RemainingRollouts.Count -gt 0) {
+            Write-Host "Remaining rollout files:"
+
+            $RemainingRollouts |
+                Select-Object FullName |
+                Format-Table
+        }
+
+        if ($RemainingIndex) {
+            Write-Host "UUID remains in session_index.jsonl."
+        }
+
+        if (@($RemainingCoreDb).Count -gt 0) {
+            Write-Host "UUID remains in Core SQLite:"
+            $RemainingCoreDb
+        }
+
+        throw (
+            "ABORTED: Core session still exists. " +
+            "Desktop metadata was NOT modified."
+        )
+    }
+
+    Write-Host "Core session state: clean"
+
+    # =========================================================
+    # 5. Clean global-state UUID references
+    # =========================================================
+
+    Write-Host ""
+    Write-Host "[4/6] Cleaning Desktop global metadata..."
+
+    $GlobalFiles = @(
+        (Join-Path $CodexHome ".codex-global-state.json"),
+        (Join-Path $CodexHome ".codex-global-state.json.bak")
+    )
+
+    foreach ($GlobalFile in $GlobalFiles) {
+
+        if (-not (Test-Path $GlobalFile)) {
+            continue
+        }
+
+        $env:CODEX_GLOBAL_FILE = $GlobalFile
+
+        @'
+import json
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+uuid = os.environ["CODEX_DELETE_UUID"]
+path = Path(os.environ["CODEX_GLOBAL_FILE"])
+
+with path.open("r", encoding="utf-8") as f:
+    data = json.load(f)
+
+removed = 0
+
+def clean(obj):
+    global removed
+
+    if isinstance(obj, dict):
+
+        for key in list(obj.keys()):
+
+            value = obj[key]
+
+            if uuid in str(key):
+                del obj[key]
+                removed += 1
+                continue
+
+            if isinstance(value, str) and uuid in value:
+                del obj[key]
+                removed += 1
+                continue
+
+            clean(value)
+
+    elif isinstance(obj, list):
+
+        new_values = []
+
+        for value in obj:
+
+            if isinstance(value, str) and uuid in value:
+                removed += 1
+                continue
+
+            clean(value)
+            new_values.append(value)
+
+        obj[:] = new_values
+
+clean(data)
+
+if removed == 0:
+    print(f"GLOBAL_CLEAN:{path}")
+    raise SystemExit(0)
+
+stamp = datetime.now().strftime(
+    "%Y%m%d-%H%M%S-%f"
+)
+
+backup = path.with_name(
+    path.name + f".predelete-{stamp}"
+)
+
+shutil.copy2(path, backup)
+
+temp = path.with_name(
+    path.name + ".tmp"
+)
+
+with temp.open(
+    "w",
+    encoding="utf-8",
+    newline="\n"
+) as f:
+    json.dump(
+        data,
+        f,
+        ensure_ascii=False,
+        separators=(",", ":")
+    )
+
+temp.replace(path)
+
+print(f"GLOBAL_REMOVED:{removed}:{path}")
+print(f"GLOBAL_BACKUP:{backup}")
+'@ | python -
+
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "Failed to clean global-state metadata: " +
+                "$GlobalFile"
+            )
+        }
+    }
+
+    # =========================================================
+    # 6. Clean Desktop catalog
+    # =========================================================
+
+    Write-Host ""
+    Write-Host "[5/6] Cleaning Desktop thread catalog..."
+
+    $CatalogDb = Join-Path $CodexHome "sqlite\codex-dev.db"
+
+    if (Test-Path $CatalogDb) {
+
+        $env:CODEX_CATALOG_DB = $CatalogDb
+
+        @'
+import os
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+uuid = os.environ["CODEX_DELETE_UUID"]
+db = Path(os.environ["CODEX_CATALOG_DB"])
+
+con = sqlite3.connect(db)
+cur = con.cursor()
+
+exists = cur.execute(
+    """
+    SELECT 1
+    FROM sqlite_master
+    WHERE type='table'
+      AND name='local_thread_catalog'
+    """
+).fetchone()
+
+if not exists:
+    con.close()
+    print("CATALOG_TABLE_NOT_FOUND")
+    raise SystemExit(0)
+
+columns = {
+    row[1]
+    for row in cur.execute(
+        'PRAGMA table_info("local_thread_catalog")'
+    )
+}
+
+if "thread_id" not in columns:
+    con.close()
+
+    raise SystemExit(
+        "ABORTED: local_thread_catalog "
+        "does not contain thread_id."
+    )
+
+rows = cur.execute(
+    """
+    SELECT rowid, *
+    FROM local_thread_catalog
+    WHERE thread_id = ?
+    """,
+    (uuid,)
+).fetchall()
+
+print("Catalog matching rows:", len(rows))
+
+if len(rows) == 0:
+    con.close()
+    print("Desktop catalog already clean.")
+    raise SystemExit(0)
+
+if len(rows) != 1:
+    con.close()
+
+    raise SystemExit(
+        f"ABORTED: expected exactly 1 matching "
+        f"catalog row, found {len(rows)}."
+    )
+
+stamp = datetime.now().strftime(
+    "%Y%m%d-%H%M%S-%f"
+)
+
+backup = db.with_name(
+    f"codex-dev.backup-{stamp}.db"
+)
+
+bak = sqlite3.connect(backup)
+
+try:
+    con.backup(bak)
+finally:
+    bak.close()
+
+print("Catalog backup:", backup)
+
+con.execute("BEGIN IMMEDIATE")
+
+try:
+
+    result = con.execute(
+        """
+        DELETE FROM local_thread_catalog
+        WHERE thread_id = ?
+        """,
+        (uuid,)
+    )
+
+    if result.rowcount != 1:
+        raise RuntimeError(
+            f"Expected exactly 1 deleted row, "
+            f"got {result.rowcount}."
+        )
+
+    con.commit()
+
+except Exception:
+    con.rollback()
+    con.close()
+    raise
+
+remaining = con.execute(
+    """
+    SELECT COUNT(*)
+    FROM local_thread_catalog
+    WHERE thread_id = ?
+    """,
+    (uuid,)
+).fetchone()[0]
+
+con.close()
+
+if remaining != 0:
+    raise SystemExit(
+        "Catalog verification failed."
+    )
+
+print("Deleted exactly 1 Desktop catalog row.")
+'@ | python -
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Desktop catalog cleanup failed."
+        }
+    }
+    else {
+        Write-Host "Desktop catalog database not found."
+    }
+
+    # =========================================================
+    # 7. Final verification
+    # =========================================================
+
+    Write-Host ""
+    Write-Host "[6/6] Final UUID verification..."
+
+    $FinalResult = @'
+import os
+import sqlite3
+from pathlib import Path
+
+uuid = os.environ["CODEX_DELETE_UUID"]
+home = Path(os.environ["CODEX_DELETE_HOME"])
+
+problems = []
+
+index = home / "session_index.jsonl"
+
+if index.exists():
+
+    text = index.read_text(
+        encoding="utf-8",
+        errors="ignore"
+    )
+
+    if uuid in text:
+        problems.append(
+            "session_index.jsonl"
+        )
+
+for root_name in (
+    "sessions",
+    "archived_sessions"
+):
+
+    root = home / root_name
+
+    if not root.exists():
+        continue
+
+    for path in root.rglob("*"):
+
+        if (
+            path.is_file()
+            and uuid in path.name
+        ):
+            problems.append(
+                str(path)
+            )
+
+for db in home.glob("state_*.sqlite"):
+
+    uri = db.resolve().as_uri() + "?mode=ro"
+
+    con = sqlite3.connect(
+        uri,
+        uri=True
+    )
+
+    cur = con.cursor()
+
+    tables = [
+        r[0]
+        for r in cur.execute(
+            "SELECT name "
+            "FROM sqlite_master "
+            "WHERE type='table'"
+        )
+    ]
+
+    db_found = False
+
+    for table in tables:
+
+        qt = '"' + table.replace('"', '""') + '"'
+
+        columns = [
+            r[1]
+            for r in cur.execute(
+                f"PRAGMA table_info({qt})"
+            )
+        ]
+
+        for col in columns:
+
+            qc = '"' + col.replace('"', '""') + '"'
+
+            try:
+
+                row = cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM {qt}
+                    WHERE instr(
+                        CAST({qc} AS TEXT),
+                        ?
+                    ) > 0
+                    LIMIT 1
+                    """,
+                    (uuid,)
+                ).fetchone()
+
+                if row:
+
+                    problems.append(
+                        f"{db.name}:{table}.{col}"
+                    )
+
+                    db_found = True
+                    break
+
+            except sqlite3.Error:
+                pass
+
+        if db_found:
+            break
+
+    con.close()
+
+for name in (
+    ".codex-global-state.json",
+    ".codex-global-state.json.bak"
+):
+
+    path = home / name
+
+    if not path.exists():
+        continue
+
+    text = path.read_text(
+        encoding="utf-8",
+        errors="ignore"
+    )
+
+    if uuid in text:
+        problems.append(name)
+
+db = home / "sqlite" / "codex-dev.db"
+
+if db.exists():
+
+    uri = db.resolve().as_uri() + "?mode=ro"
+
+    con = sqlite3.connect(
+        uri,
+        uri=True
+    )
+
+    cur = con.cursor()
+
+    exists = cur.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type='table'
+          AND name='local_thread_catalog'
+        """
+    ).fetchone()
+
+    if exists:
+
+        columns = {
+            row[1]
+            for row in cur.execute(
+                'PRAGMA table_info("local_thread_catalog")'
+            )
+        }
+
+        if "thread_id" in columns:
+
+            row = cur.execute(
+                """
+                SELECT 1
+                FROM local_thread_catalog
+                WHERE thread_id = ?
+                LIMIT 1
+                """,
+                (uuid,)
+            ).fetchone()
+
+            if row:
+                problems.append(
+                    "codex-dev.db:"
+                    "local_thread_catalog"
+                )
+
+    con.close()
+
+if problems:
+
+    print("DIRTY")
+
+    for problem in problems:
+        print(problem)
+
+else:
+    print("CLEAN")
+'@ | python -
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Final verification failed to run."
+    }
+
+    $FinalLines = @($FinalResult)
+
+    if (-not ($FinalLines -contains "CLEAN")) {
+
+        Write-Host ""
+        Write-Host "FINAL VERIFICATION FAILED" `
+            -ForegroundColor Red
+
+        $FinalLines
+
+        throw (
+            "Target UUID still exists in active " +
+            "Codex state."
+        )
+    }
+
+    Write-Host ""
+    Write-Host "SUCCESS" `
+        -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "Target UUID completely removed:"
+    Write-Host "  $Uuid"
+    Write-Host ""
+
+    Write-Host "Core session state : clean"
+    Write-Host "Global UI metadata : clean"
+    Write-Host "Desktop catalog    : clean"
+}
+
+
+Export-ModuleMember `
+    -Function Find-CodexSession, Remove-CodexSessionHard
