@@ -1226,27 +1226,39 @@ function Get-CodexSessionBatchSnapshot {
     }
 
     # 3. Core SQLite + Desktop catalog in one Python invocation.
-    $TargetFile = New-TemporaryFile
+    #
+    # IMPORTANT: do not use Set-Content/New-TemporaryFile here.
+    # Remove-CodexSessionsHard supports -WhatIf, and $WhatIfPreference is
+    # inherited by nested PowerShell commands that support ShouldProcess.
+    # A Set-Content-based transport can therefore be skipped under -WhatIf.
+    #
+    # Also avoid `python -c <multiline script>` because Windows PowerShell
+    # 5.1 can alter quoting when passing a complex multiline argument to a
+    # native executable.  Feed the Python program on stdin instead, matching
+    # the pattern already used by Remove-CodexSessionHard.
+    $PreviousBatchUuids = $env:CODEX_BATCH_UUIDS
+    $PreviousBatchHome = $env:CODEX_BATCH_HOME
+    $HadBatchUuids = Test-Path Env:CODEX_BATCH_UUIDS
+    $HadBatchHome = Test-Path Env:CODEX_BATCH_HOME
 
     try {
-        $TargetJson = ConvertTo-Json -InputObject @($Uuid) -Compress
-        Set-Content -LiteralPath $TargetFile.FullName -Value $TargetJson -Encoding UTF8
+        $env:CODEX_BATCH_UUIDS = ConvertTo-Json -InputObject @($Uuid) -Compress
+        $env:CODEX_BATCH_HOME = $CodexHome
 
-        $BatchInspectPython = @'
+        $InspectionJson = @'
 import json
+import os
 import sqlite3
-import sys
 from pathlib import Path
 
-with open(sys.argv[1], "r", encoding="utf-8-sig") as f:
-    raw_targets = json.load(f)
+raw_targets = json.loads(os.environ["CODEX_BATCH_UUIDS"])
 
 if isinstance(raw_targets, str):
     raw_targets = [raw_targets]
 
 targets = [str(x).lower() for x in raw_targets]
 target_set = set(targets)
-home = Path(sys.argv[2])
+home = Path(os.environ["CODEX_BATCH_HOME"])
 core_db = set()
 desktop = []
 
@@ -1393,12 +1405,7 @@ print(json.dumps({
     "core_db": sorted(core_db),
     "desktop": desktop,
 }, ensure_ascii=True))
-'@
-
-        $InspectionJson = & python -c `
-            $BatchInspectPython `
-            $TargetFile.FullName `
-            $CodexHome
+'@ | python -
 
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to inspect batch Core/Desktop state."
@@ -1443,7 +1450,27 @@ print(json.dumps({
         }
     }
     finally {
-        Remove-Item -LiteralPath $TargetFile.FullName -Force -ErrorAction SilentlyContinue
+        if ($HadBatchUuids) {
+            $env:CODEX_BATCH_UUIDS = $PreviousBatchUuids
+        }
+        else {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_BATCH_UUIDS",
+                $null,
+                "Process"
+            )
+        }
+
+        if ($HadBatchHome) {
+            $env:CODEX_BATCH_HOME = $PreviousBatchHome
+        }
+        else {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_BATCH_HOME",
+                $null,
+                "Process"
+            )
+        }
     }
 
     # 4. Preserve the stable, de-duplicated input order.
