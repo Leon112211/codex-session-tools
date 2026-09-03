@@ -18,6 +18,7 @@ if (Get-Module CodexSessionTools -ErrorAction SilentlyContinue) {
 # Also remove old in-memory functions if they exist
 Remove-Item Function:\Find-CodexSession -ErrorAction SilentlyContinue
 Remove-Item Function:\Remove-CodexSessionHard -ErrorAction SilentlyContinue
+Remove-Item Function:\Remove-CodexSessionsHard -ErrorAction SilentlyContinue
 
 # ============================================================
 # 2. Clean PowerShell profile
@@ -116,6 +117,10 @@ if (Test-Path $PROFILE) {
         -Text $ProfileText `
         -FunctionName "Remove-CodexSessionHard"
 
+    $ProfileText = Remove-LegacyFunctionBlock `
+        -Text $ProfileText `
+        -FunctionName "Remove-CodexSessionsHard"
+
     # --------------------------------------------------------
     # Normalize excessive blank lines
     # --------------------------------------------------------
@@ -194,7 +199,11 @@ $RemoveExists = Get-Command `
     Remove-CodexSessionHard `
     -ErrorAction SilentlyContinue
 
-if ($FindExists -or $RemoveExists) {
+$RemoveBatchExists = Get-Command `
+    Remove-CodexSessionsHard `
+    -ErrorAction SilentlyContinue
+
+if ($FindExists -or $RemoveExists -or $RemoveBatchExists) {
 
     Write-Warning "One or more commands still exist in the current session."
     Write-Host "Close this PowerShell window and open a new one."
@@ -210,4 +219,5 @@ Write-Host "Open a new PowerShell window, then verify with:"
 Write-Host ""
 Write-Host "  Get-Command Find-CodexSession -ErrorAction SilentlyContinue"
 Write-Host "  Get-Command Remove-CodexSessionHard -ErrorAction SilentlyContinue"
+Write-Host "  Get-Command Remove-CodexSessionsHard -ErrorAction SilentlyContinue"
 Write-Host ""

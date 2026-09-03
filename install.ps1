@@ -122,7 +122,8 @@ Import-Module $ModulePath -Force
 
 $RequiredCommands = @(
     "Find-CodexSession",
-    "Remove-CodexSessionHard"
+    "Remove-CodexSessionHard",
+    "Remove-CodexSessionsHard"
 )
 
 foreach ($Command in $RequiredCommands) {
@@ -140,10 +141,12 @@ Write-Host ""
 Write-Host "Available commands:"
 Write-Host "  Find-CodexSession"
 Write-Host "  Remove-CodexSessionHard"
+Write-Host "  Remove-CodexSessionsHard"
 Write-Host ""
 Write-Host "Examples:"
 Write-Host '  Find-CodexSession "hello"'
 Write-Host '  Remove-CodexSessionHard -Uuid "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"'
+Write-Host '  Find-CodexSession "old" | Remove-CodexSessionsHard'
 Write-Host ""
 Write-Host "The module will be loaded automatically in future PowerShell sessions."
 Write-Host ""

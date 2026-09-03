@@ -12,7 +12,7 @@ _This is an unofficial community project. It is not affiliated with or endorsed 
 - Search sessions by title or UUID.
 - List sessions found in Codex Core state, the Desktop catalog, or both.
 - Identify stale Desktop-only entries.
-- Delete exactly one session by UUID.
+- Delete one session or a reviewed batch by UUID.
 - Use the official Codex CLI deletion command when Core state exists.
 - Back up Desktop state before changing matching records.
 - Stop when the detected state is ambiguous or cannot be verified safely.
@@ -93,6 +93,34 @@ Remove-CodexSessionHard -Uuid "01234567-89ab-cdef-0123-456789abcdef"
 
 Session titles are not unique. Deletion therefore requires a valid UUID and does not accept a title.
 
+### Delete multiple sessions
+
+Pass an explicit UUID array:
+
+```powershell
+Remove-CodexSessionsHard -Uuid @(
+    "01234567-89ab-cdef-0123-456789abcdef"
+    "fedcba98-7654-3210-fedc-ba9876543210"
+)
+```
+
+Or pipe session objects from `Find-CodexSession`:
+
+```powershell
+Find-CodexSession "old project" | Remove-CodexSessionsHard
+```
+
+Preview the complete batch without deleting anything:
+
+```powershell
+Find-CodexSession "old project" | Remove-CodexSessionsHard -WhatIf
+```
+
+The batch command validates and de-duplicates every UUID, verifies that every target exists, and displays the complete deletion plan before requesting one confirmation. It then deletes sessions sequentially using the same verified single-session workflow. If one deletion fails, processing stops; completed deletions are not rolled back, and remaining targets are reported as `NotRun`.
+
+> [!CAUTION]
+> Review the complete preflight table before confirming. Every session object received through the pipeline becomes a deletion target.
+
 ## What deletion does
 
 For the supplied UUID, `Remove-CodexSessionHard`:
@@ -103,6 +131,8 @@ For the supplied UUID, `Remove-CodexSessionHard`:
 4. Verifies that Core state is clean before modifying Desktop metadata.
 5. Removes matching Desktop metadata and the matching catalog row.
 6. Performs a final UUID verification and fails if any checked reference remains.
+
+`Remove-CodexSessionsHard` performs a complete batch preflight and confirmation, then applies this workflow to each UUID in order. Each session retains its own verification and backup behavior.
 
 The tool does **not intentionally**:
 
@@ -140,6 +170,7 @@ The uninstall script removes the installed module and its PowerShell profile ent
 - **`python` or `codex` was not found:** ensure Python 3 and the Codex CLI are installed and available on `PATH`.
 - **Codex/ChatGPT is still running:** fully exit the desktop app, including background processes, and retry.
 - **Commands are unavailable after installation:** open a new PowerShell window or import `$HOME\.codex-session-tools\CodexSessionTools.psm1` manually.
+- **A batch reports `NotRun`:** an earlier target failed, so the fail-fast batch stopped before reaching the remaining targets.
 - **Deletion aborts during verification:** do not edit the databases manually. Review the reported paths and preserve the generated backups before investigating further.
 
 ## Security and support

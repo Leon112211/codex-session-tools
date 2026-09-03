@@ -27,7 +27,7 @@ Codex Session Tools operates on local Codex state. Before using a destructive co
 - fully close Codex and ChatGPT Desktop; and
 - verify the target UUID carefully.
 
-The deletion command is designed to operate on one explicitly supplied UUID and to stop when expected data structures are ambiguous or cannot be verified safely.
+The deletion commands operate only on explicitly supplied UUIDs. Single-session deletion accepts one UUID; batch deletion validates and preflights the complete UUID list before requesting confirmation. Both workflows stop when expected data structures are ambiguous or cannot be verified safely.
 
 ## Supported environment
 
